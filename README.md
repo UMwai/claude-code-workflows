@@ -1,13 +1,47 @@
 # Claude Code Workflows
-The best workflows and configurations I've developed heavily using Claude Code since the day of it's release. Workflows are based off applied learnings from our AI-native startup. 
 
-Workflows are covered in detail with tutorials and demos on [Patrick Ellis' YouTube channel](https://www.youtube.com/@PatrickOakleyEllis).
+Battle-tested workflows and configurations for [Claude Code](https://claude.ai/code), Anthropic's official CLI.
 
-## Workflows
-
-### [Design Review Workflow](./design-review/)
-An automated design review system that provides comprehensive feedback on front-end code changes. This workflow uses Playwright browser automation and specialized Claude Code agents to ensure UI/UX consistency, accessibility compliance, and adherence to world-class design standards. Perfect for maintaining design quality across teams and catching visual issues before they reach production.
+Built from real-world experience at an AI-native startup, using Claude Code daily since launch.
 
 ---
 
-*More workflows coming soon...*
+## Workflows
+
+### [Design Review](./design-review/)
+
+Automated design review system for frontend code changes.
+
+**What it does:**
+- Provides comprehensive UI/UX feedback on PRs and working changes
+- Uses Playwright to test actual UI components (not just static code analysis)
+- Evaluates against design standards from Stripe, Airbnb, Linear
+- Checks accessibility (WCAG AA+), responsiveness, visual hierarchy
+
+**Features:**
+- `/design-review` slash command for on-demand reviews
+- Specialized subagent configuration
+- CLAUDE.md snippets for design principles
+- Multi-phase review process
+
+---
+
+## Setup
+
+1. Clone this repo
+2. Copy the relevant workflow files to your project's `.claude/` directory
+3. Customize the configurations for your design system
+4. Run the slash commands or trigger via PR hooks
+
+---
+
+## Resources
+
+- [Claude Code Documentation](https://docs.anthropic.com/en/docs/claude-code)
+- [Video Tutorial](https://www.youtube.com/watch?v=xOO8Wt_i72s) - Walkthrough of the design review workflow
+
+---
+
+## License
+
+MIT
