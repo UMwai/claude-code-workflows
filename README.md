@@ -86,11 +86,50 @@ Example:
 - Single file edits
 - Quick lookups
 
+## Also Included: UM Loop
+
+An iterative task completion workflow based on the Ralph Wiggum technique. Uses PRD checkboxes to track progress across iterations.
+
+### The Three-File System
+
+| File | Purpose |
+|------|---------|
+| `PRD.md` | Requirements with checkboxes to track completion |
+| `progress.md` | Log of actions (append-only memory) |
+| `PROMPT.md` | Agent instructions for autonomous work |
+
+### Usage
+
+```
+/um-loop start Build a REST API with CRUD operations
+```
+
+Then continue with `/um-loop` to work on the next item.
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `/um-loop start [task]` | Initialize new loop |
+| `/um-loop` | Continue (do next item) |
+| `/um-loop status` | Check progress |
+
+### When to Use Which
+
+| Scenario | Use |
+|----------|-----|
+| Research, exploration, context-heavy | Manus Workflow |
+| Implementation, clear deliverables | UM Loop |
+| Complex project | Manus first, then UM Loop |
+
+---
+
 ## Skills Included
 
 | Skill | Description | Status |
 |-------|-------------|--------|
 | `manus-workflow` | File-based planning workflow | ✅ Ready |
+| `um-loop` | Iterative task completion with PRD checkboxes | ✅ Ready |
 
 ## Repository Structure
 
@@ -99,14 +138,20 @@ claude-code-workflows/
 ├── README.md
 ├── LICENSE
 ├── skills/
-│   └── manus-workflow/
+│   ├── manus-workflow/
+│   │   ├── SKILL.md          # Main skill definition
+│   │   ├── reference.md      # Deep dive on principles
+│   │   ├── examples.md       # Usage examples
+│   │   └── templates/
+│   │       ├── task_plan.md
+│   │       ├── notes.md
+│   │       └── deliverable.md
+│   └── um-loop/
 │       ├── SKILL.md          # Main skill definition
-│       ├── reference.md      # Deep dive on principles
-│       ├── examples.md       # Usage examples
 │       └── templates/
-│           ├── task_plan.md
-│           ├── notes.md
-│           └── deliverable.md
+│           ├── PROMPT.md     # Agent instructions
+│           ├── PRD.md        # Task requirements
+│           └── progress.md   # Progress log
 └── docs/
     └── installation.md
 ```
