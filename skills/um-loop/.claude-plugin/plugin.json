@@ -1,7 +1,0 @@
-{
-  "name": "um-loop",
-  "description": "Iterative task completion workflow with PRD checkboxes and progress tracking. Based on the Ralph Wiggum technique.",
-  "author": {
-    "name": "UMWai"
-  }
-}

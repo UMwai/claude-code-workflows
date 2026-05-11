@@ -1,0 +1,163 @@
+# UM Loop Configuration v3.0 - Full Reference
+# Copy this to .um-loop/config.yaml and customize
+
+# ============================================
+# PROJECT INFO
+# ============================================
+
+project:
+  name: "my-app"
+  language: "TypeScript"
+  framework: "Next.js"
+
+# ============================================
+# COMMANDS
+# ============================================
+
+# Commands to run for verification
+commands:
+  test: "npm test"
+  lint: "npm run lint"
+  build: "npm run build"
+
+# ============================================
+# RULES
+# ============================================
+
+# Rules the AI must follow
+rules:
+  - "use TypeScript strict mode"
+  - "follow existing code patterns"
+  - "add tests for new features"
+  - "use server actions not API routes"
+  - "prefer composition over inheritance"
+
+# ============================================
+# BOUNDARIES
+# ============================================
+
+# Files/directories the AI should never modify
+boundaries:
+  never_touch:
+    - "src/legacy/**"
+    - "*.lock"
+    - ".env*"
+    - "node_modules/**"
+    - "dist/**"
+
+# ============================================
+# MODEL ROUTING (v3.0)
+# ============================================
+
+# Default model for unmatched tasks
+models:
+  default: "claude"
+  research: "gemini"    # Large context analysis (1M tokens)
+  planning: "codex"     # Architecture design
+  implementation: "claude"  # Code writing
+
+# Pattern-based routing rules (checked in order)
+routing:
+  - pattern: "research|analyze|explore|review|understand|summarize|document"
+    model: gemini
+  - pattern: "plan|design|architect|strategy"
+    model: codex
+  - pattern: "implement|build|fix|refactor|create|add|remove"
+    model: claude
+
+# ============================================
+# GIT WORKFLOW (v3.0)
+# ============================================
+
+git:
+  branch_per_task: true        # Create branch for each task
+  auto_commit: true            # Auto-commit after task completion
+  auto_merge: true             # Auto-merge task branches when done
+  base_branch: "main"          # Branch to merge into
+  branch_prefix: "um-loop/"    # Prefix for task branches
+
+# Example branches:
+#   um-loop/task-1-set-up-server
+#   um-loop/task-2-create-models
+
+# ============================================
+# NOTIFICATIONS (v3.0)
+# ============================================
+
+notifications:
+  # Discord webhook notifications
+  discord:
+    webhook: "https://discord.com/api/webhooks/..."  # Or set UM_LOOP_DISCORD_WEBHOOK env var
+    events:
+      - complete    # All tasks finished
+      - error       # Error occurred
+      - milestone   # Progress milestone (25%, 50%, 75%)
+      - start       # Loop started
+      - task        # Individual task completed
+
+  # Slack webhook notifications
+  slack:
+    webhook: "https://hooks.slack.com/services/..."  # Or set UM_LOOP_SLACK_WEBHOOK env var
+    events:
+      - complete
+      - error
+
+# ============================================
+# GITHUB INTEGRATION (v3.0)
+# ============================================
+
+github:
+  sync_issues: true            # Sync PRD with GitHub issues
+  close_on_complete: true      # Close issues when tasks complete
+  labels: ["um-loop", "automated"]  # Labels to filter/apply
+
+# Usage:
+#   /um-loop --from-issues "label:um-loop"
+#   /um-loop --from-issues "#123,#124,#125"
+#   /um-loop --sync-issues
+
+# ============================================
+# PARALLEL EXECUTION (v3.0)
+# ============================================
+
+parallel:
+  enabled: true                # Enable parallel agent mode
+  max_agents: 3                # Max concurrent subagents
+  strategy: "independent"      # "independent" or "coordinated"
+
+# Strategies:
+#   - independent: Agents work on separate tasks with no shared files
+#   - coordinated: Coordinator reviews and merges agent work
+
+# PRD format for parallel:
+#   - [ ] @agent:1 Set up Express server
+#   - [ ] @agent:2 Create database models
+#   - [ ] Implement endpoints (blocked by: 1, 2)
+
+# ============================================
+# TASK SOURCES
+# ============================================
+
+task_sources:
+  - "PRD.md"
+  - "tasks/*.md"
+  - "TODO.md"
+
+# ============================================
+# ADVANCED OPTIONS
+# ============================================
+
+# Maximum iterations before stopping (0 = unlimited)
+max_iterations: 50
+
+# Verification requirements
+verification:
+  require_tests: true          # Must pass tests before marking complete
+  require_lint: true           # Must pass lint before marking complete
+  require_build: false         # Must pass build before marking complete
+
+# Progress tracking
+progress:
+  file: "progress.md"          # Progress log file
+  timestamp_format: "ISO8601"  # or "human"
+  include_diffs: false         # Include git diffs in progress log

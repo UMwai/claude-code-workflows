@@ -1,0 +1,21 @@
+{
+  "name": "um-loop",
+  "description": "Autonomous task completion loop v3.0. Features: parallel agents, multi-model routing, Discord/Slack notifications, GitHub issues integration, auto-merge git workflow.",
+  "version": "3.0.0",
+  "author": {
+    "name": "UMWai"
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/stop-hook.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

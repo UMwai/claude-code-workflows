@@ -5,104 +5,96 @@
 - [Claude Code CLI](https://claude.ai/download) installed
 - Git (for cloning)
 
-## Installation Methods
+## Installation
 
-### Method 1: Copy Skills (Recommended)
-
-This is the simplest approach and keeps your skills self-contained.
-
-```bash
-# Clone the repository
-git clone https://github.com/UMWai/claude-code-workflows.git
-cd claude-code-workflows
-
-# Create skills directory if it doesn't exist
-mkdir -p ~/.claude/skills
-
-# Copy all skills
-cp -r skills/* ~/.claude/skills/
-```
-
-### Method 2: Symlink (For Development)
-
-If you want to modify skills and have changes apply immediately:
+### Step 1: Clone the Repository
 
 ```bash
 git clone https://github.com/UMWai/claude-code-workflows.git
 cd claude-code-workflows
-
-# Symlink specific skill
-ln -s $(pwd)/skills/manus-workflow ~/.claude/skills/manus-workflow
 ```
 
-### Method 3: Direct Download
+### Step 2: Install um-goals
 
-No git required:
+The um-goals skill has two components: a slash command (for Claude Code) and a CLI helper (for managing goal files).
+
+**Install the slash command:**
+
+```bash
+mkdir -p ~/.claude/commands
+cp skills/um-goals/um-goals.md ~/.claude/commands/um-goals.md
+```
+
+**Install the CLI helper:**
+
+```bash
+chmod +x skills/um-goals/um-goals
+sudo ln -sf $(pwd)/skills/um-goals/um-goals /usr/local/bin/um-goals
+```
+
+### Step 3: Install Manus Workflow (Optional)
 
 ```bash
 mkdir -p ~/.claude/skills
-curl -L https://github.com/UMWai/claude-code-workflows/archive/main.tar.gz | \
-  tar -xz --strip-components=2 -C ~/.claude/skills claude-code-workflows-main/skills
+cp -r skills/manus-workflow ~/.claude/skills/manus-workflow
 ```
 
-## Verify Installation
-
-After installation, verify the skill is available:
+### Step 4: Verify Installation
 
 ```bash
-ls ~/.claude/skills/manus-workflow/
+# Check um-goals CLI
+um-goals help
+
+# Check slash command exists
+ls ~/.claude/commands/um-goals.md
 ```
 
-You should see:
-```
-SKILL.md
-reference.md
-examples.md
-templates/
-```
+### Step 5: Restart Claude Code
 
-## Using Skills
-
-Once installed, invoke skills in Claude Code:
-
-```
-/manus start Your task description here
-```
+Start a new Claude Code session. The `/um-goals` command should appear in your slash command menu.
 
 ## Updating
 
-To update to the latest version:
-
 ```bash
-cd claude-code-workflows  # or wherever you cloned
+cd claude-code-workflows
 git pull
 
-# If using copy method, re-copy
-cp -r skills/* ~/.claude/skills/
+# Re-copy the command file
+cp skills/um-goals/um-goals.md ~/.claude/commands/um-goals.md
 ```
 
 ## Uninstalling
 
 ```bash
+# Remove slash command
+rm ~/.claude/commands/um-goals.md
+
+# Remove CLI helper
+sudo rm /usr/local/bin/um-goals
+
+# Remove goal data (optional)
+rm -rf ~/.um-goals
+
+# Remove manus workflow (if installed)
 rm -rf ~/.claude/skills/manus-workflow
 ```
 
 ## Troubleshooting
 
-### Skill not recognized
+### `/um-goals` not appearing in slash command menu
 
-1. Check the skill exists: `ls ~/.claude/skills/manus-workflow/SKILL.md`
-2. Restart Claude Code
-3. Ensure SKILL.md has correct "Invoke with:" header
+1. Check the file exists: `ls ~/.claude/commands/um-goals.md`
+2. Restart Claude Code session
+3. Verify frontmatter is intact at the top of the file
+
+### `um-goals` CLI not found
+
+1. Check the symlink: `ls -la /usr/local/bin/um-goals`
+2. Or add the script directory to your PATH: `export PATH="$PATH:/path/to/claude-code-workflows/skills/um-goals"`
 
 ### Permission errors
 
 ```bash
-chmod -R 755 ~/.claude/skills/
-```
-
-### Skills directory doesn't exist
-
-```bash
-mkdir -p ~/.claude/skills
+chmod +x skills/um-goals/um-goals
+chmod 644 ~/.claude/commands/um-goals.md
 ```

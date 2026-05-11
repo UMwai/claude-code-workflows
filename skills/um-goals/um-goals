@@ -1,0 +1,712 @@
+#!/bin/bash
+# um-goals v3 — Persistent goal execution with auto-decomposition and structured evaluation
+
+set -euo pipefail
+
+GOALS_DIR="${UM_GOALS_DIR:-$HOME/.um-goals}"
+MAX_ITERATIONS=0
+GOAL_ID=""
+SUBCOMMAND=""
+EVENTS_LOG=""
+
+usage() {
+  cat <<'EOF'
+um-goals v3 — Persistent goal execution
+
+USAGE:
+  um-goals create "Build an auth system with JWT"
+  um-goals list
+  um-goals show <goal-id>
+  um-goals run <goal-id> [OPTIONS]
+  um-goals pause <goal-id>
+  um-goals resume <goal-id>
+  um-goals complete <goal-id>
+  um-goals delete <goal-id>
+  um-goals subgoal <goal-id> [action]    Manage acceptance criteria
+  um-goals events <goal-id>              Show JSONL event stream
+  um-goals stats <goal-id>               Show budget/cost summary
+
+SUBCOMMANDS:
+  create <title>         Create a new goal
+  list                   Show all goals with status
+  show <id>              Show goal details + progress
+  run <id> [OPTIONS]     Execute iterations (via /um-goals skill)
+  pause <id>             Pause an active goal
+  resume <id>            Resume a paused goal
+  complete <id>          Manually mark goal complete
+  delete <id>            Delete a goal
+  subgoal <id> [action]  Manage acceptance criteria
+  events <id>            Stream JSONL events for a goal
+  stats <id>             Show budget usage and cost summary
+
+SUBGOAL ACTIONS:
+  show                   Show numbered criteria (default)
+  add <text>             Add a new criterion
+  mark <N> done|impossible|pending   Change criterion status
+  undo <N>               Revert criterion to pending
+  remove <N>             Remove a criterion
+  clear                  Wipe all criteria (triggers re-decompose)
+
+RUN OPTIONS:
+  -n, --max-iterations <N>   Safety cap on iterations (default: 20)
+
+EXAMPLES:
+  um-goals create "Refactor the cache layer for Redis support"
+  um-goals run goal-001 -n 30
+  um-goals subgoal goal-001 show
+  um-goals subgoal goal-001 add "Implement error handling for edge cases"
+  um-goals subgoal goal-001 mark 3 done
+  um-goals events goal-001 | jq '.type'
+  um-goals stats goal-001
+EOF
+  exit 0
+}
+
+ensure_goals_dir() {
+  mkdir -p "$GOALS_DIR/goals" "$GOALS_DIR/events"
+}
+
+next_goal_id() {
+  local max=0
+  shopt -s nullglob
+  for f in "$GOALS_DIR/goals"/goal-*.md; do
+    local num
+    num=$(basename "$f" | sed 's/goal-0*\([0-9]\+\).*/\1/')
+    if [[ "$num" -gt "$max" ]]; then
+      max=$num
+    fi
+  done
+  shopt -u nullglob
+  printf "goal-%03d" $((max + 1))
+}
+
+get_goal_file() {
+  local id="$1"
+  if [[ "$id" =~ ^[0-9]+$ ]]; then
+    id=$(printf "goal-%03d" "$id")
+  fi
+  local file="$GOALS_DIR/goals/${id}.md"
+  if [[ ! -f "$file" ]]; then
+    echo "Error: Goal $id not found at $file" >&2
+    exit 1
+  fi
+  echo "$file"
+}
+
+get_events_file() {
+  local id="$1"
+  if [[ "$id" =~ ^[0-9]+$ ]]; then
+    id=$(printf "goal-%03d" "$id")
+  fi
+  echo "$GOALS_DIR/events/${id}.jsonl"
+}
+
+get_field() {
+  local file="$1" field="$2"
+  sed -n '/^---$/,/^---$/{ /^---$/d; p; }' "$file" | grep "^${field}:" | sed "s/^${field}: *//" | sed 's/^"\(.*\)"$/\1/'
+}
+
+set_field() {
+  local file="$1" field="$2" value="$3"
+  local temp="${file}.tmp.$$"
+  sed "s/^${field}: .*/${field}: ${value}/" "$file" > "$temp"
+  mv "$temp" "$file"
+}
+
+# ── JSONL Event Emitter ──────────────────────────────────────────────
+
+emit_event() {
+  local type="$1" goal_id="$2"
+  shift 2
+  local ts
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  local payload="{\"type\":\"${type}\",\"goal_id\":\"${goal_id}\",\"timestamp\":\"${ts}\""
+
+  while [[ $# -ge 2 ]]; do
+    local key="$1" val="$2"
+    shift 2
+    val=$(printf '%s' "$val" | sed 's/"/\\"/g' | tr '\n' ' ')
+    if [[ "$val" =~ ^-?[0-9]+\.?[0-9]*$ ]]; then
+      payload="${payload},\"${key}\":${val}"
+    else
+      payload="${payload},\"${key}\":\"${val}\""
+    fi
+  done
+  payload="${payload}}"
+
+  if [[ -n "$EVENTS_LOG" ]]; then
+    echo "$payload" >> "$EVENTS_LOG"
+  fi
+  echo "$payload" >&2
+}
+
+# ── Criteria Helpers ─────────────────────────────────────────────────
+
+get_criteria_section() {
+  local file="$1"
+  sed -n '/^## Acceptance Criteria$/,/^## /{/^## Acceptance Criteria$/d;/^## /d;p;}' "$file"
+}
+
+count_checked() {
+  local file="$1" n
+  n=$(get_criteria_section "$file" | grep -c '^- \[x\]' 2>/dev/null) || true
+  echo "${n:-0}"
+}
+
+count_impossible() {
+  local file="$1" n
+  n=$(get_criteria_section "$file" | grep -c '^- \[!\]' 2>/dev/null) || true
+  echo "${n:-0}"
+}
+
+count_pending() {
+  local file="$1" n
+  n=$(get_criteria_section "$file" | grep -c '^- \[ \]' 2>/dev/null) || true
+  echo "${n:-0}"
+}
+
+get_nth_criterion_line() {
+  local file="$1" n="$2"
+  local in_section=false
+  local count=0
+  local line_num=0
+  while IFS= read -r line; do
+    line_num=$((line_num + 1))
+    if [[ "$line" == "## Acceptance Criteria" ]]; then
+      in_section=true
+      continue
+    fi
+    if $in_section && [[ "$line" =~ ^##\  ]]; then
+      break
+    fi
+    if $in_section && [[ "$line" =~ ^-\ \[.\] ]]; then
+      count=$((count + 1))
+      if [[ $count -eq $n ]]; then
+        echo "$line_num"
+        return 0
+      fi
+    fi
+  done < "$file"
+  return 1
+}
+
+# ── Commands ─────────────────────────────────────────────────────────
+
+cmd_create() {
+  local title="$1"
+  ensure_goals_dir
+  local id
+  id=$(next_goal_id)
+  local file="$GOALS_DIR/goals/${id}.md"
+  local now
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  local project
+  project=$(pwd)
+
+  cat > "$file" <<EOF
+---
+id: $id
+title: "$title"
+status: pending
+created: "$now"
+updated: "$now"
+iteration: 0
+decomposed: false
+token_budget: 0
+tokens_used: 0
+turn_budget: 20
+turns_used: 0
+consecutive_failures: 0
+project: "$project"
+---
+
+## Objective
+
+$title
+
+## Acceptance Criteria
+
+(Criteria will be auto-generated when the goal is run via /um-goals)
+
+## Constraints
+
+(Add any constraints, tech choices, or rules here)
+
+## Progress Log
+
+(Iterations will be appended here automatically)
+EOF
+
+  EVENTS_LOG=$(get_events_file "$id")
+  emit_event "goal_created" "$id" "title" "$title"
+
+  echo "Created $id: $title"
+  echo "File: $file"
+  echo ""
+  echo "Next steps — from Claude Code:"
+  echo "  /um-goals run $id          (auto-decomposes criteria, then executes)"
+  echo "  /um-goals subgoal $id add \"criterion text\"   (manually add criteria)"
+}
+
+cmd_list() {
+  ensure_goals_dir
+  local found=false
+  printf "%-12s %-16s %-10s %-12s %s\n" "ID" "STATUS" "TURNS" "CRITERIA" "TITLE"
+  printf "%-12s %-16s %-10s %-12s %s\n" "---" "---" "---" "---" "---"
+  shopt -s nullglob
+  for f in "$GOALS_DIR/goals"/goal-*.md; do
+    found=true
+    local id status title
+    id=$(get_field "$f" "id")
+    status=$(get_field "$f" "status")
+    title=$(get_field "$f" "title")
+
+    local turns_used turn_budget turns_fmt
+    turns_used=$(get_field "$f" "turns_used" 2>/dev/null || true)
+    turn_budget=$(get_field "$f" "turn_budget" 2>/dev/null || true)
+    : "${turns_used:=0}"
+    : "${turn_budget:=20}"
+    turns_fmt="${turns_used}/${turn_budget}"
+
+    local checked impossible pending total criteria_fmt
+    checked=$(count_checked "$f")
+    impossible=$(count_impossible "$f")
+    pending=$(count_pending "$f")
+    : "${checked:=0}" "${impossible:=0}" "${pending:=0}"
+    total=$((checked + impossible + pending))
+    criteria_fmt="${checked}/${total}"
+
+    printf "%-12s %-16s %-10s %-12s %s\n" "$id" "$status" "$turns_fmt" "$criteria_fmt" "$title"
+  done
+  shopt -u nullglob
+  if [[ "$found" == "false" ]]; then
+    echo "(no goals yet — run: um-goals create \"your task\")"
+  fi
+}
+
+cmd_show() {
+  local file
+  file=$(get_goal_file "$1")
+  cat "$file"
+}
+
+cmd_set_status() {
+  local file status
+  file=$(get_goal_file "$1")
+  status="$2"
+  set_field "$file" "status" "$status"
+  set_field "$file" "updated" "\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
+  echo "$(get_field "$file" "id"): status → $status"
+}
+
+cmd_delete() {
+  local file
+  file=$(get_goal_file "$1")
+  local id
+  id=$(get_field "$file" "id")
+  rm "$file"
+  local events_file
+  events_file=$(get_events_file "$id")
+  rm -f "$events_file"
+  echo "Deleted $id"
+}
+
+cmd_events() {
+  local id="$1"
+  if [[ "$id" =~ ^[0-9]+$ ]]; then
+    id=$(printf "goal-%03d" "$id")
+  fi
+  local events_file="$GOALS_DIR/events/${id}.jsonl"
+  if [[ -f "$events_file" ]]; then
+    cat "$events_file"
+  else
+    echo "No events for $id"
+  fi
+}
+
+cmd_stats() {
+  local file
+  file=$(get_goal_file "$1")
+  local id status
+  id=$(get_field "$file" "id")
+  status=$(get_field "$file" "status")
+
+  local turns_used turn_budget token_budget tokens_used consecutive_failures decomposed
+  turns_used=$(get_field "$file" "turns_used" 2>/dev/null || echo "0")
+  turn_budget=$(get_field "$file" "turn_budget" 2>/dev/null || echo "20")
+  token_budget=$(get_field "$file" "token_budget" 2>/dev/null || echo "0")
+  tokens_used=$(get_field "$file" "tokens_used" 2>/dev/null || echo "0")
+  consecutive_failures=$(get_field "$file" "consecutive_failures" 2>/dev/null || echo "0")
+  decomposed=$(get_field "$file" "decomposed" 2>/dev/null || echo "false")
+  [[ -z "$turns_used" ]] && turns_used=0
+  [[ -z "$turn_budget" ]] && turn_budget=20
+  [[ -z "$token_budget" ]] && token_budget=0
+  [[ -z "$tokens_used" ]] && tokens_used=0
+  [[ -z "$consecutive_failures" ]] && consecutive_failures=0
+  [[ -z "$decomposed" ]] && decomposed=false
+
+  local checked impossible pending total
+  checked=$(count_checked "$file")
+  impossible=$(count_impossible "$file")
+  pending=$(count_pending "$file")
+  total=$((checked + impossible + pending))
+
+  local token_fmt
+  if [[ "$token_budget" -gt 0 ]] 2>/dev/null; then
+    token_fmt="${tokens_used}/${token_budget}"
+  else
+    token_fmt="${tokens_used} (unlimited)"
+  fi
+
+  echo "═══════════════════════════════════════════"
+  echo "  Stats: $id"
+  echo "═══════════════════════════════════════════"
+  echo "  Status:              $status"
+  echo "  Turns:               ${turns_used}/${turn_budget}"
+  echo "  Criteria:            ${checked} done, ${pending} pending, ${impossible} impossible (${total} total)"
+  echo "  Token budget:        $token_fmt"
+  echo "  Consec. failures:    $consecutive_failures"
+  echo "  Decomposed:          $decomposed"
+  echo "═══════════════════════════════════════════"
+
+  local events_file
+  events_file=$(get_events_file "$id")
+  if [[ -f "$events_file" ]] && grep -q '"iteration_end"' "$events_file" 2>/dev/null; then
+    echo ""
+    echo "Per-iteration breakdown:"
+    printf "  %-6s %-10s %-10s %-12s %s\n" "ITER" "TIME" "TOKENS" "CRITERIA" "STATUS"
+    grep '"iteration_end"' "$events_file" 2>/dev/null | while IFS= read -r line; do
+      local i_num i_time i_tokens i_criteria i_exit
+      i_num=$(echo "$line" | sed -n 's/.*"iteration":\([0-9]*\).*/\1/p')
+      i_time=$(echo "$line" | sed -n 's/.*"duration_secs":\([0-9]*\).*/\1/p')
+      i_tokens=$(echo "$line" | sed -n 's/.*"tokens_est":\([0-9]*\).*/\1/p')
+      i_criteria=$(echo "$line" | sed -n 's/.*"criteria_done":\([0-9]*\).*/\1/p')
+      i_exit=$(echo "$line" | sed -n 's/.*"exit_reason":"\([^"]*\)".*/\1/p')
+      printf "  %-6s %-10s %-10s %-12s %s\n" \
+        "${i_num:-?}" "${i_time:-?}s" "${i_tokens:-?}" "${i_criteria:-0} done" "${i_exit:-ok}"
+    done || true
+  fi
+}
+
+cmd_subgoal() {
+  local goal_id="${POSITIONAL[0]}"
+  local action="${POSITIONAL[1]:-show}"
+  local file
+  file=$(get_goal_file "$goal_id")
+
+  case "$action" in
+    show|"")
+      local in_section=false
+      local count=0
+      local first_pending=""
+      echo "Criteria for $(get_field "$file" "id") — $(get_field "$file" "title")"
+      echo ""
+      while IFS= read -r line; do
+        if [[ "$line" == "## Acceptance Criteria" ]]; then
+          in_section=true
+          continue
+        fi
+        if $in_section && [[ "$line" =~ ^##\  ]]; then
+          break
+        fi
+        if $in_section && [[ "$line" =~ ^-\ \[.\] ]]; then
+          count=$((count + 1))
+          local marker
+          marker=$(echo "$line" | sed 's/^- \[\(.\)\].*/\1/')
+          local text
+          text=$(echo "$line" | sed 's/^- \[.\] //')
+          local status_label
+          case "$marker" in
+            x) status_label="done" ;;
+            " ") status_label="pending"
+                 if [[ -z "$first_pending" ]]; then
+                   first_pending=$count
+                 fi
+                 ;;
+            "!") status_label="impossible" ;;
+            *) status_label="?" ;;
+          esac
+          local next_marker=""
+          if [[ "$count" -eq "${first_pending:-0}" ]] && [[ "$status_label" == "pending" ]]; then
+            next_marker=" <- NEXT"
+          fi
+          printf " %2d. [%s] %s (%s)%s\n" "$count" "$marker" "$text" "$status_label" "$next_marker"
+        fi
+        if $in_section && [[ "$line" =~ ^\ *\> ]]; then
+          printf "         %s\n" "$line"
+        fi
+      done < "$file"
+      if [[ $count -eq 0 ]]; then
+        echo "  (no criteria — run /um-goals to auto-decompose, or: um-goals subgoal $goal_id add \"text\")"
+      fi
+      local done_count impossible_count
+      done_count=$(count_checked "$file")
+      impossible_count=$(count_impossible "$file")
+      echo ""
+      echo "Summary: $done_count done, $((count - done_count - impossible_count)) pending, $impossible_count impossible ($count total)"
+      ;;
+
+    add)
+      local text="${POSITIONAL[*]:2}"
+      if [[ -z "$text" ]]; then
+        echo "Error: provide criterion text. Example: um-goals subgoal $goal_id add \"Handle edge case\"" >&2
+        exit 1
+      fi
+      local last_criterion_line=0
+      local in_section=false
+      local line_num=0
+      local section_end=0
+      while IFS= read -r line; do
+        line_num=$((line_num + 1))
+        if [[ "$line" == "## Acceptance Criteria" ]]; then
+          in_section=true
+          section_end=$line_num
+          continue
+        fi
+        if $in_section && [[ "$line" =~ ^##\  ]]; then
+          break
+        fi
+        if $in_section; then
+          if [[ "$line" =~ ^-\ \[.\] ]]; then
+            last_criterion_line=$line_num
+          fi
+          section_end=$line_num
+        fi
+      done < "$file"
+
+      local insert_after
+      if [[ $last_criterion_line -gt 0 ]]; then
+        insert_after=$last_criterion_line
+        local check_line=$((last_criterion_line + 1))
+        while true; do
+          local nextline
+          nextline=$(sed -n "${check_line}p" "$file")
+          if [[ "$nextline" =~ ^\ *\> ]]; then
+            insert_after=$check_line
+            check_line=$((check_line + 1))
+          else
+            break
+          fi
+        done
+      else
+        insert_after=$section_end
+      fi
+
+      local temp="${file}.tmp.$$"
+      sed "${insert_after}a\\- [ ] ${text}" "$file" > "$temp"
+      mv "$temp" "$file"
+      set_field "$file" "updated" "\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
+      echo "Added criterion: $text"
+      ;;
+
+    mark)
+      local num="${POSITIONAL[2]:-}"
+      local new_status="${POSITIONAL[3]:-}"
+      if [[ -z "$num" ]] || [[ -z "$new_status" ]]; then
+        echo "Usage: um-goals subgoal $goal_id mark <N> done|impossible|pending" >&2
+        exit 1
+      fi
+      local new_marker
+      case "$new_status" in
+        done) new_marker="x" ;;
+        impossible) new_marker="!" ;;
+        pending) new_marker=" " ;;
+        *) echo "Error: status must be done, impossible, or pending" >&2; exit 1 ;;
+      esac
+      local target_line
+      target_line=$(get_nth_criterion_line "$file" "$num") || {
+        echo "Error: criterion #$num not found" >&2; exit 1
+      }
+      local temp="${file}.tmp.$$"
+      sed "${target_line}s/^- \[.\]/- [${new_marker}]/" "$file" > "$temp"
+      mv "$temp" "$file"
+      set_field "$file" "updated" "\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
+      echo "Criterion #$num marked as $new_status"
+      ;;
+
+    undo)
+      local num="${POSITIONAL[2]:-}"
+      if [[ -z "$num" ]]; then
+        echo "Usage: um-goals subgoal $goal_id undo <N>" >&2
+        exit 1
+      fi
+      local target_line
+      target_line=$(get_nth_criterion_line "$file" "$num") || {
+        echo "Error: criterion #$num not found" >&2; exit 1
+      }
+      local temp="${file}.tmp.$$"
+      sed "${target_line}s/^- \[.\]/- [ ]/" "$file" > "$temp"
+      mv "$temp" "$file"
+      local next_line=$((target_line + 1))
+      while true; do
+        local content
+        content=$(sed -n "${next_line}p" "$file")
+        if [[ "$content" =~ ^\ *\> ]]; then
+          local temp2="${file}.tmp.$$"
+          sed "${next_line}d" "$file" > "$temp2"
+          mv "$temp2" "$file"
+        else
+          break
+        fi
+      done
+      set_field "$file" "updated" "\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
+      echo "Criterion #$num reverted to pending"
+      ;;
+
+    remove)
+      local num="${POSITIONAL[2]:-}"
+      if [[ -z "$num" ]]; then
+        echo "Usage: um-goals subgoal $goal_id remove <N>" >&2
+        exit 1
+      fi
+      local target_line
+      target_line=$(get_nth_criterion_line "$file" "$num") || {
+        echo "Error: criterion #$num not found" >&2; exit 1
+      }
+      local temp="${file}.tmp.$$"
+      sed "${target_line}d" "$file" > "$temp"
+      mv "$temp" "$file"
+      while true; do
+        local content
+        content=$(sed -n "${target_line}p" "$file")
+        if [[ "$content" =~ ^\ *\> ]]; then
+          local temp2="${file}.tmp.$$"
+          sed "${target_line}d" "$file" > "$temp2"
+          mv "$temp2" "$file"
+        else
+          break
+        fi
+      done
+      set_field "$file" "updated" "\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
+      echo "Criterion #$num removed"
+      ;;
+
+    clear)
+      local temp="${file}.tmp.$$"
+      awk '
+        /^## Acceptance Criteria$/ { print; print ""; print "(Criteria will be auto-generated when the goal is run via /um-goals)"; skip=1; next }
+        skip && /^## / { skip=0 }
+        !skip { print }
+      ' "$file" > "$temp"
+      mv "$temp" "$file"
+      set_field "$file" "decomposed" "false"
+      set_field "$file" "updated" "\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
+      echo "Criteria cleared. Will auto-decompose on next /um-goals run."
+      ;;
+
+    *)
+      echo "Unknown subgoal action: $action" >&2
+      echo "Usage: um-goals subgoal <id> [show|add|mark|undo|remove|clear]" >&2
+      exit 1
+      ;;
+  esac
+}
+
+cmd_run() {
+  echo "um-goals run is now handled by the /um-goals skill (v3)."
+  echo ""
+  echo "From Claude Code, use:"
+  echo "  /um-goals run $1 -n 20"
+  echo ""
+  echo "This runs inside your session with full permissions, MCP tools, and context."
+  exit 0
+}
+
+# ── Parse Arguments ──────────────────────────────────────────────────
+
+if [[ $# -eq 0 ]] || [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
+  usage
+fi
+
+SUBCOMMAND="$1"
+shift
+
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -h|--help) usage ;;
+    -n|--max-iterations) MAX_ITERATIONS="$2"; shift 2 ;;
+    *) POSITIONAL+=("$1"); shift ;;
+  esac
+done
+
+case "$SUBCOMMAND" in
+  create)
+    if [[ ${#POSITIONAL[@]} -eq 0 ]]; then
+      echo "Error: provide a title. Example: um-goals create \"Build auth system\"" >&2
+      exit 1
+    fi
+    cmd_create "${POSITIONAL[*]}"
+    ;;
+  list|ls)
+    cmd_list
+    ;;
+  show)
+    if [[ ${#POSITIONAL[@]} -eq 0 ]]; then
+      echo "Error: provide a goal ID. Example: um-goals show goal-001" >&2
+      exit 1
+    fi
+    cmd_show "${POSITIONAL[0]}"
+    ;;
+  run)
+    if [[ ${#POSITIONAL[@]} -eq 0 ]]; then
+      echo "Error: provide a goal ID. Example: um-goals run goal-001 -n 20" >&2
+      exit 1
+    fi
+    cmd_run "${POSITIONAL[0]}"
+    ;;
+  pause)
+    if [[ ${#POSITIONAL[@]} -eq 0 ]]; then
+      echo "Error: provide a goal ID." >&2
+      exit 1
+    fi
+    cmd_set_status "${POSITIONAL[0]}" "paused"
+    ;;
+  resume)
+    if [[ ${#POSITIONAL[@]} -eq 0 ]]; then
+      echo "Error: provide a goal ID." >&2
+      exit 1
+    fi
+    cmd_set_status "${POSITIONAL[0]}" "active"
+    ;;
+  complete)
+    if [[ ${#POSITIONAL[@]} -eq 0 ]]; then
+      echo "Error: provide a goal ID." >&2
+      exit 1
+    fi
+    cmd_set_status "${POSITIONAL[0]}" "complete"
+    ;;
+  delete|rm)
+    if [[ ${#POSITIONAL[@]} -eq 0 ]]; then
+      echo "Error: provide a goal ID." >&2
+      exit 1
+    fi
+    cmd_delete "${POSITIONAL[0]}"
+    ;;
+  subgoal|sg)
+    if [[ ${#POSITIONAL[@]} -eq 0 ]]; then
+      echo "Error: provide a goal ID. Example: um-goals subgoal goal-001 show" >&2
+      exit 1
+    fi
+    cmd_subgoal
+    ;;
+  events)
+    if [[ ${#POSITIONAL[@]} -eq 0 ]]; then
+      echo "Error: provide a goal ID. Example: um-goals events goal-001" >&2
+      exit 1
+    fi
+    cmd_events "${POSITIONAL[0]}"
+    ;;
+  stats)
+    if [[ ${#POSITIONAL[@]} -eq 0 ]]; then
+      echo "Error: provide a goal ID. Example: um-goals stats goal-001" >&2
+      exit 1
+    fi
+    cmd_stats "${POSITIONAL[0]}"
+    ;;
+  *)
+    echo "Unknown subcommand: $SUBCOMMAND" >&2
+    echo "Run 'um-goals --help' for usage." >&2
+    exit 1
+    ;;
+esac
