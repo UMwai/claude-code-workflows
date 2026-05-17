@@ -169,6 +169,45 @@ After each worker fork returns, the orchestrator evaluates the result:
 
 ---
 
+## North Star — Goal Alignment Check
+
+**On-demand alignment checker** that evaluates whether your current work serves the project's declared ultimate goal. Scores branches, commits, and goals against your pillars/objectives.
+
+```bash
+/north-star              # Full alignment audit
+/north-star session      # Quick 2-3 sentence verdict
+/north-star branch       # Score only current branch
+/north-star goals        # Score only active um-goals
+/north-star retro        # Classify last 20 commits by pillar
+```
+
+### Setup
+
+Create an `ULTIMATE_GOALS.md` in your repo root with your pillars, checklist, and anti-goals. The skill reads it as the scoring rubric. See `skills/north-star/SKILL.md` for the template.
+
+### Scores
+
+| Score | Meaning |
+|-------|---------|
+| **ALIGNED** | Work directly advances at least one pillar |
+| **ENABLING** | Infrastructure that unblocks a specific pillar |
+| **DRIFTING** | Doesn't clearly map — needs justification |
+| **OFF-MISSION** | Contradicts an anti-goal or delays progress |
+
+### Installation
+
+```bash
+cp skills/north-star/north-star.md ~/.claude/commands/north-star.md
+```
+
+Or for project-level:
+
+```bash
+cp skills/north-star/north-star.md <your-project>/.claude/commands/north-star.md
+```
+
+---
+
 ## Also Included: Manus Workflow
 
 The [Manus AI workflow pattern](https://gist.github.com/renschni/4fbc70b31bad8dd57f3370239dccd58f) — file-based "working memory" for complex research tasks.
@@ -194,6 +233,9 @@ claude-code-workflows/
 │   ├── um-goals/
 │   │   ├── SKILL.md                 # Skill definition
 │   │   └── um-goals.md             # Slash command (copy to ~/.claude/commands/)
+│   ├── north-star/
+│   │   ├── SKILL.md                 # Skill definition + setup template
+│   │   └── north-star.md            # Slash command (copy to ~/.claude/commands/)
 │   └── manus-workflow/
 │       ├── SKILL.md
 │       ├── reference.md
