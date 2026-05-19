@@ -304,6 +304,7 @@ When the Agent fork returns, YOU (the orchestrator) evaluate the result. This is
        > Completed: <YYYY-MM-DD HH:MM>
      ```
    - Set `consecutive_failures: 0` in frontmatter via Edit
+   - **Do NOT stop here** — "done" means this criterion is done, not the goal. Continue to Steps 8-11.
 
    **If partial:**
    - Leave as `- [ ] <criterion text>` (do NOT check the box)
@@ -405,29 +406,33 @@ Read `consecutive_failures` from frontmatter. If >= 3:
 - Emit JSONL event: `{"type":"auto_paused","goal_id":"<id>","reason":"consecutive_failures","timestamp":"<ISO8601>"}`
 - Stop.
 
-**Step 11: Loop or stop**
+**Step 11: Continue the loop (MANDATORY)**
 
-Check the current state:
+⚠️ **CRITICAL: You MUST call ScheduleWakeup at the end of every iteration unless one of the two exit conditions below is met. Failing to call ScheduleWakeup kills the goal loop. This is the most important step.**
 
-- **All criteria done?** (no `- [ ]` lines remain — all are `[x]` or `[!]`):
-  → Commit any uncommitted work (Step 9)
-  → Run `um-goals complete <id>`
-  → Tell the user with a summary of what was accomplished
-  → Stop.
+**Check exit conditions IN THIS ORDER:**
 
-- **Budget exhausted?** (`turns_used >= turn_budget` or `tokens_used >= token_budget`):
-  → Set `status: budget_limited` in frontmatter
-  → Commit any uncommitted work (Step 9)
-  → Tell user
-  → Stop.
+1. **All criteria done?** (no `- [ ]` lines remain — all are `[x]` or `[!]`):
+   → Commit any uncommitted work (Step 9)
+   → Run `um-goals complete <id>`
+   → Tell the user with a summary of what was accomplished
+   → **EXIT — do NOT call ScheduleWakeup.**
 
-- **Otherwise → continue the loop:**
-  Use **ScheduleWakeup** to schedule the next iteration:
-  - `delaySeconds: 60` (minimum — stays within prompt cache window)
-  - `prompt`: `/um-goals run <id> -n <turn_budget>` (re-enter with the same turn budget)
-  - `reason`: `"um-goals iteration <N+1>: <next criterion summary>"`
+2. **Budget exhausted?** (`turns_used >= turn_budget` or `tokens_used >= token_budget`):
+   → Set `status: budget_limited` in frontmatter
+   → Commit any uncommitted work (Step 9)
+   → Tell user
+   → **EXIT — do NOT call ScheduleWakeup.**
+
+3. **EVERY OTHER CASE → MUST call ScheduleWakeup.** This includes after a successful "done" verdict, after "partial", after "blocked" — any verdict that doesn't trigger exit conditions 1 or 2 above. Call ScheduleWakeup with:
+   - `delaySeconds: 60` (minimum — stays within prompt cache window)
+   - `prompt`: `/um-goals run <id> -n <turn_budget>` (re-enter with the same turn budget)
+   - `reason`: `"um-goals iteration <N+1>: <next criterion summary>"`
+   
+   **Do this IMMEDIATELY after updating state. Do not output a summary to the user and stop — that kills the loop.**
 
 **Important rules for the run loop:**
+- **NEVER end a turn without calling ScheduleWakeup** unless ALL criteria are done or budget is exhausted — this is the #1 failure mode
 - ONE criterion per iteration — go deep, not wide
 - The orchestrator judges completion, not the worker fork
 - Stickiness: never regress a `[x]` or `[!]` criterion
@@ -436,6 +441,7 @@ Check the current state:
 - Use `--parallel` to spawn multiple Agent forks for independent criteria simultaneously
 - The goal file at `~/.um-goals/goals/<id>.md` is the source of truth
 - Auto-commit happens every 3 iterations (configurable) — never let work pile up uncommitted
+- After judging a criterion as "done", there are likely MORE criteria remaining — check and continue, do not stop
 
 ### If "promote <id> [options]":
 
