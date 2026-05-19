@@ -273,34 +273,68 @@ Use `Agent` tool with name `"goal-<id>-iter-<N>"` where N is `iteration + 1`.
 
 When the Agent fork returns, YOU (the orchestrator) evaluate the result. This is NOT a separate model call — you have the fork's output and you judge it.
 
-1. Read the goal file fresh:
-   ```bash
-   cat ~/.um-goals/goals/<id>.md
-   ```
+**7a. Completion audit protocol:**
 
-2. Review the fork's output carefully. Look for:
-   - Did it claim to address the criterion?
-   - Is there concrete evidence? (test output, file creation, command results, code written)
-   - Are there caveats, partial results, or errors?
+Before deciding a verdict, perform a disciplined audit. Do NOT trust the fork's self-report at face value.
 
-3. Determine a verdict for the target criterion:
+1. **Restate the criterion as a concrete deliverable.** What specific artifact, behavior, or state would prove this is done? If you can't name it precisely, the criterion may be too vague — note this.
 
-   **done** — The fork produced clear evidence that the criterion is satisfied. Tests pass, files exist and contain expected content, commands succeed.
+2. **Build an evidence checklist.** What would you need to see to be convinced? Examples:
+   - File exists at expected path with expected content
+   - Test passes and covers the criterion's requirements
+   - Command produces expected output
+   - API endpoint returns correct response
+   - Configuration is applied and active
 
-   **partial** — Progress was made but the criterion isn't fully satisfied. Something is missing or incomplete.
+3. **Do NOT accept proxy signals.** The fork saying "I implemented X" is not evidence that X works. Code being written is not evidence that code is correct. A test file existing is not evidence that it passes.
+
+4. **Do NOT rely on intent or partial progress.** "I started working on..." or "The framework is in place for..." means partial at best.
+
+5. **Treat uncertainty as not-done.** If you're unsure whether the criterion is fully met, the verdict is `partial`, not `done`.
+
+**7b. Independent verification** (spot-check the fork's claims):
+
+Do NOT skip this step. The fork may claim success but not deliver. Verify by actually checking:
+
+```bash
+# Check what the fork actually changed
+git diff --stat
+
+# If the fork claimed to create/modify specific files, verify they exist
+ls -la <claimed-file-path>
+
+# If the fork claimed tests pass, re-run them
+<test-command-for-this-project>
+
+# If the fork claimed a specific behavior, spot-check it
+<relevant verification command>
+```
+
+Pick the 1-2 most important claims from the fork's output and verify them directly. You don't need to verify everything — but you MUST verify at least one concrete claim before marking `done`.
+
+If verification fails (file doesn't exist, test fails, output differs from claim), downgrade the verdict to `partial` regardless of what the fork reported.
+
+**7c. Determine verdict:**
+
+Based on the audit and verification:
+
+   **done** — The audit checklist is satisfied AND independent verification confirms it. Tests pass, files exist and contain expected content, commands succeed.
+
+   **partial** — Progress was made but the audit found gaps, or verification revealed discrepancies between claims and reality.
 
    **blocked** — The fork couldn't make meaningful progress due to an external dependency, missing resource, or environmental issue.
 
    **impossible** — The criterion fundamentally cannot be satisfied in the current environment (missing APIs, wrong platform, incompatible requirements).
 
-4. Apply the verdict to the goal file:
+**7d. Apply the verdict** to the goal file:
 
    **If done:**
    - Edit the goal file: change `- [ ] <criterion text>` to `- [x] <criterion text>`
-   - Add evidence blockquote on the next line(s):
+   - Add evidence blockquote on the next line(s) — include what you independently verified:
      ```
      - [x] <criterion text>
-       > Evidence: <one-line summary of what confirms completion>
+       > Evidence: <what you verified — e.g., "test_auth.py::test_jwt passes, auth/jwt.py exists with generate_token()">
+       > Verified: <what specific check you ran — e.g., "ran pytest test_auth.py, confirmed file exists">
        > Completed: <YYYY-MM-DD HH:MM>
      ```
    - Set `consecutive_failures: 0` in frontmatter via Edit
